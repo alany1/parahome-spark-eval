@@ -104,6 +104,7 @@ if __name__ == "__main__":
     vis.add_geometry({"name":"global", "geometry":global_coord})    
     vis.add_plane()
     renders = []
+    depth_renders = []
     for fn in trange(args.start_frame, min(args.end_frame+1, frame_length), 10):
         """
         Head tip position 
@@ -147,14 +148,20 @@ if __name__ == "__main__":
             extrinsic_matrix = np.linalg.inv(head_Trgb)
             vis.setupcamera(extrinsic_matrix)
 
-        render = vis.grab_render()
-        renders.append(render)
+        render = vis.grab_render("rgb", "depth")
+        renders.append(render["rgb"])
+        
+        depth_viz = np.clip(render["depth"], 0, 5)
+        depth_viz = ((depth_viz/5.0)*255).astype(np.uint8)
+        depth_renders.append(depth_viz)
+        
         vis.remove_geometry("human")
 
     from ml_logger import logger
     logger.configure(root="/home/exx/Downloads", prefix=".")
     with logger.Prefix("render"):
         logger.save_video(renders, "render.mp4", fps=10)
+        logger.save_video(depth_renders, "depth_render.mp4", fps=10)
     
 
 

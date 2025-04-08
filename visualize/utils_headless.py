@@ -285,45 +285,93 @@ class simpleViewerHeadless(object):
     def setupcamera(self, extrinsic_matrix):
         self.main_vis.setup_camera(self.intrinsic, extrinsic_matrix, self.width, self.height)
 
-    def grab_render(self):
-        image = self.main_vis.render_to_image()
-        return image
-        
-    def add_plane(self, resolution=128, bound=100, up_vec='z'):
-        def makeGridPlane(bound=100., resolution=128, color = np.array([0.5,0.5,0.5]), up='z'):
-            min_bound = np.array([-bound, -bound])
-            max_bound = np.array([bound, bound])
-            xy_range = np.linspace(min_bound, max_bound, num=resolution)
-            grid_points = np.stack(np.meshgrid(*xy_range.T), axis=-1).astype(np.float32) # asd
-            if up == 'z':
-                grid3d = np.concatenate([grid_points, np.zeros_like(grid_points[:,:,0]).reshape(resolution, resolution, 1)], axis=2)
-            elif up == 'y':
-                grid3d = np.concatenate([grid_points[:,:,0][:,:,None], np.zeros_like(grid_points[:,:,0]).reshape(resolution, resolution, 1), grid_points[:,:,1][:,:,None]], axis=2)
-            elif up == 'x':
-                grid3d = np.concatenate([np.zeros_like(grid_points[:,:,0]).reshape(resolution, resolution, 1), grid_points], axis=2)
+    def grab_render(self, *keys):
+        render = dict()
+        for key in keys:
+            if key == "rgb":
+                image = np.asarray(self.main_vis.render_to_image())
+            elif key == "depth":
+                image = np.asarray(self.main_vis.render_to_depth_image(z_in_view_space=True))
             else:
-                print("Up vector not specified")
-                return None
-            grid3d = grid3d.reshape((resolution**2,3))
-            indices = []
-            for y in range(resolution):
-                for x in range(resolution):
-                    corner_idx = resolution*y + x
-                    if x + 1 < resolution:
-                        indices.append((corner_idx, corner_idx + 1))
-                    if y + 1 < resolution:
-                        indices.append((corner_idx, corner_idx + resolution))
+                raise ValueError(f"Unknown render key: {key}")
+            render[key] = image
+        return render
 
-            line_set = o3d.geometry.LineSet(
-                points=o3d.utility.Vector3dVector(grid3d),
-                lines=o3d.utility.Vector2iVector(indices),
+    def add_plane(self, resolution=128, bound=100, up_vec="z"):
+        """
+        Creates a plane as a subdivided TriangleMesh (instead of a wireframe LineSet).
+        This plane has 'resolution x resolution' vertices spread from -bound to +bound,
+        and each cell is turned into two triangles.
+
+        :param resolution: Number of vertices along each axis (>= 2).
+        :param bound: Half-extent of the plane along each axis, so plane goes [-bound, +bound].
+        :param up_vec: Which axis is "up"; can be 'z', 'y', or 'x'.
+        """
+
+        def make_filled_plane(bound=100.0, resolution=128, up="z"):
+            # 1) Create a grid of coordinates in 2D (ranging from -bound to +bound).
+            xs = np.linspace(-bound, bound, num=resolution, dtype=np.float32)
+            ys = np.linspace(-bound, bound, num=resolution, dtype=np.float32)
+
+            # We’ll generate resolution x resolution vertices in 3D.
+            # The shape is (resolution*resolution, 3).
+            # We adapt their final positions based on the 'up' axis.
+            verts_2d = np.stack(np.meshgrid(xs, ys), axis=-1).reshape(
+                -1, 2
+            )  # shape: [N, 2]
+
+            if up == "z":
+                # XY plane, Z=0
+                verts_3d = np.column_stack(
+                    (verts_2d[:, 0], verts_2d[:, 1], np.zeros_like(verts_2d[:, 0]))
+                )
+            elif up == "y":
+                # XZ plane, Y=0
+                verts_3d = np.column_stack(
+                    (verts_2d[:, 0], np.zeros_like(verts_2d[:, 0]), verts_2d[:, 1])
+                )
+            elif up == "x":
+                # YZ plane, X=0
+                verts_3d = np.column_stack(
+                    (np.zeros_like(verts_2d[:, 0]), verts_2d[:, 0], verts_2d[:, 1])
+                )
+            else:
+                raise ValueError("up_vec must be 'x', 'y', or 'z'")
+
+            # 2) Create the triangle indices.
+            # For each cell in the (resolution-1) x (resolution-1) grid, we make two triangles.
+            triangles = []
+            for row in range(resolution - 1):
+                for col in range(resolution - 1):
+                    i0 = row * resolution + col
+                    i1 = i0 + 1
+                    i2 = (row + 1) * resolution + col
+                    i3 = i2 + 1
+                    # Two triangles: (i0, i2, i1) and (i2, i3, i1)
+                    triangles.append([i0, i2, i1])
+                    triangles.append([i2, i3, i1])
+
+            # 3) Build a TriangleMesh from these vertices and triangles.
+            mesh = o3d.geometry.TriangleMesh()
+            mesh.vertices = o3d.utility.Vector3dVector(verts_3d)
+            mesh.triangles = o3d.utility.Vector3iVector(
+                np.array(triangles, dtype=np.int32)
             )
-            # line_set.colors = o3d.utility.Vector3dVector(colors)  
-            line_set.paint_uniform_color(color)
+            mesh.compute_triangle_normals()
 
-            return line_set
-        plane = makeGridPlane(bound, resolution, up=up_vec)
-        self.add_geometry({"name":"floor", "geometry":plane})
+            # Optional: paint uniform color (vertex colors).
+            # This is only needed if you plan on using "defaultUnlit" or "defaultLit" with vertex colors.
+            # If you have a separate MaterialRecord with a base color, you can skip this.
+            mesh.paint_uniform_color([0.5, 0.5, 0.5])
+
+            return mesh
+
+        # Create the plane mesh:
+        plane_mesh = make_filled_plane(bound, resolution, up=up_vec)
+
+        # Add it to your scene with a default or custom material:
+        self.add_geometry({"name": "floor", "geometry": plane_mesh})
+
         return
 
     def remove_plane(self):
