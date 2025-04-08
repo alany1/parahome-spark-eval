@@ -1,10 +1,8 @@
+import numpy as np
+import open3d as o3d
 import torch
 import torch.nn as nn
 from pytorch3d.transforms import rotation_6d_to_matrix
-
-import open3d as o3d
-import numpy as np
-
 
 body_order = {'pHipOrigin': 0,
               'jL5S1': 1,
@@ -262,33 +260,35 @@ def get_stickman(body_position_arr, head_tip=None, color=[0.4, 0.4, 0.4], foot_c
             body_mesh += get_segment(parent, child, 0.02, color)
     return body_mesh
 
-
-
 class simpleViewerHeadless(object):
+    
+    
     def __init__(self, title, width, height, view_set_list, view=None):
-        app = o3d.visualization.gui.Application.instance
-        app.initialize()
-        self.main_vis = o3d.visualization.O3DVisualizer(title, width, height)
-        self.main_vis.show_settings = False
-        self.main_vis.show_skybox(False)
-        app.add_window(self.main_vis)
-
+        mesh_default_material = o3d.visualization.rendering.MaterialRecord()
+        mesh_default_material.shader = "defaultLit"
+        
+        line_default_material = o3d.visualization.rendering.MaterialRecord()
+        line_default_material.shader = "unlitLine"
+        
+        self.default_materials = {
+            "mesh": mesh_default_material,
+            "line": line_default_material,
+        }
+        self.main_vis = o3d.visualization.rendering.OffscreenRenderer(width, height)
+        
         if view is not None:
-            self.intrinsic = view.intrinsic
+            self.intrinsic = view.intrinsic.intrinsic_matrix
+        self.width = width
+        self.height = height
 
-    def export_view(self):
-        return self.curview
 
     def setupcamera(self, extrinsic_matrix):
-        self.main_vis.setup_camera(self.intrinsic, extrinsic_matrix)
+        self.main_vis.setup_camera(self.intrinsic, extrinsic_matrix, self.width, self.height)
 
-    def tick(self):
-        app = o3d.visualization.gui.Application.instance
-        tick_return = app.run_one_tick()
-        if tick_return:
-            self.main_vis.post_redraw()
-        return tick_return
-
+    def grab_render(self):
+        image = self.main_vis.render_to_image()
+        return image
+        
     def add_plane(self, resolution=128, bound=100, up_vec='z'):
         def makeGridPlane(bound=100., resolution=128, color = np.array([0.5,0.5,0.5]), up='z'):
             min_bound = np.array([-bound, -bound])
@@ -323,28 +323,60 @@ class simpleViewerHeadless(object):
 
             return line_set
         plane = makeGridPlane(bound, resolution, up=up_vec)
-        self.main_vis.add_geometry({"name":"floor", "geometry":plane})
+        self.add_geometry({"name":"floor", "geometry":plane})
         return
 
     def remove_plane(self):
-        self.main_vis.remove_geometry({"name":"floor"})
+        self.main_vis.scene.remove_geometry("floor")
         return
 
     def add_geometry(self, geometry:dict):
-        self.main_vis.add_geometry(geometry)
+        material = None
+        if "LineSet" in str(type(geometry["geometry"])):
+            material = self.default_materials["line"]
+        elif "TriangleMesh" in str(type(geometry["geometry"])):
+            material = self.default_materials["mesh"]
+        self.main_vis.scene.add_geometry(**geometry, material=material)
 
-    def write_image(self, imagepath):
-        self.main_vis.export_current_image(imagepath)
 
     def transform(self,name, transform_mtx):
         self.main_vis.scene.set_geometry_transform(name, transform_mtx)
 
     def set_background(self, image):
-        self.main_vis.set_background([1, 1, 1, 0], image)
+        self.main_vis.scene.set_background([1, 1, 1, 0], image)
 
     def remove_geometry(self, geom_name):
-        self.main_vis.remove_geometry(geom_name)
+        self.main_vis.scene.remove_geometry(geom_name)
 
-    def run(self):
-        app = o3d.visualization.gui.Application.instance
-        app.run()
+if __name__ == '__main__':
+    x = simpleViewerHeadless("Render Scene", 1600, 800, [], view)  #
+
+    vis = o3d.visualization.rendering.OffscreenRenderer(1600, 800)
+    material = o3d.visualization.rendering.MaterialRecord()
+    material.shader = "defaultLit"  # or "defaultUnlit", etc.
+
+    vis.scene.add_geometry("global", global_coord, material)
+
+    material_2 = o3d.visualization.rendering.MaterialRecord()
+    material_2.shader = "unlitLine"
+
+    vis.scene.add_geometry(
+        name="floor",
+        geometry=plane,  # This is a LineSet
+        material=material_2,
+    )
+
+    vis.scene.add_geometry(
+        **{"name": "human", "geometry": bmesh + hmesh, "material": material}
+    )
+    vis.scene.reset_camera_to_default()
+    view.intrinsic.intrinsic_matrix
+    vis.setup_camera(camera_matrix, extrinsic_matrix, width, height)
+    img = vis.render_to_image()  # Renders the scene from your specified camera setup.
+
+    from matplotlib import pyplot as plt
+
+    plt.imshow(img)
+    plt.show()
+
+    str(type(plane))

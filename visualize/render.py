@@ -1,27 +1,28 @@
-from __init__ import *
-
-import os
-import json
-import pickle
 import argparse
-import torch
+import json
+import os
+import pickle
 from pathlib import Path
-import open3d as o3d
-import numpy as np
 
-from utils import makeTpose, rotation_6d_to_matrix, BodyMaker, HandMaker, \
-                    simpleViewer, get_stickman, get_stickhand
+import numpy as np
+import open3d as o3d
+import torch
+from tqdm import trange
+
+from __init__ import *
+from utils_headless import makeTpose, rotation_6d_to_matrix, BodyMaker, HandMaker, \
+    get_stickman, get_stickhand, simpleViewerHeadless
 
 SCAN_ROOT = os.path.join(ROOT_REPOSITORY, "data/scan")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--scene_root", default="data/seq/s01", help="target path, e.g : ")
+    parser.add_argument("--scene_root", default="data/seq/s1", help="target path, e.g : ")
     parser.add_argument("--start_frame", default=0, type=int, help="Render start frame number") 
     parser.add_argument("--end_frame", default=100000, type=int, help="Render end frame number")
     parser.add_argument("--run", default=False, action='store_true', help='If set, viewer will show start_frame scene at specific view')
     parser.add_argument("--fromort", default=False, action='store_true', help='Make skeleton from orientation, transform to ')
-    parser.add_argument("--ego", action='store_true')
+    parser.add_argument("--ego", default=True, action='store_true')
 
     args = parser.parse_args()
     
@@ -97,13 +98,13 @@ if __name__ == "__main__":
         view.intrinsic.width, view.intrinsic.height = width, height
     else:
         view=None
-
-    vis = simpleViewer("Render Scene", 1600, 800, [], view) # 
-
+    
+    vis = simpleViewerHeadless("Render Scene", 1600, 800, [], view) # 
     global_coord = o3d.geometry.TriangleMesh().create_coordinate_frame(size=0.2)
     vis.add_geometry({"name":"global", "geometry":global_coord})    
     vis.add_plane()
-    for fn in range(args.start_frame, min(args.end_frame+1, frame_length)):
+    renders = []
+    for fn in trange(args.start_frame, min(args.end_frame+1, frame_length), 10):
         """
         Head tip position 
         """
@@ -125,17 +126,15 @@ if __name__ == "__main__":
         for inst_name, loaded in initialized.items():
             if loaded and inst_name in cur_object_pose:
                 vis.transform(inst_name, cur_object_pose[inst_name])
-            elif loaded and not inst_name in cur_object_pose: 
+            elif loaded and inst_name not in cur_object_pose: 
                 vis.remove_geometry(inst_name)
                 initialized[inst_name] = False
             elif not loaded and inst_name in cur_object_pose:
                 vis.add_geometry({"name":inst_name, "geometry":mesh_dict[inst_name]})
                 vis.transform(inst_name, cur_object_pose[inst_name])
                 initialized[inst_name] = True
-            elif not loaded and not inst_name in cur_object_pose:
+            elif not loaded and inst_name not in cur_object_pose:
                 continue
-        if fn == args.start_frame:
-            vis.main_vis.reset_camera_to_default()
 
         if args.ego:
             head_posinrgb = cur_human_joints[5]
@@ -148,12 +147,15 @@ if __name__ == "__main__":
             extrinsic_matrix = np.linalg.inv(head_Trgb)
             vis.setupcamera(extrinsic_matrix)
 
-        if args.run:
-            vis.run()        
-        else:
-            vis.tick()
+        render = vis.grab_render()
+        renders.append(render)
         vis.remove_geometry("human")
 
+    from ml_logger import logger
+    logger.configure(root="/home/exx/Downloads", prefix=".")
+    with logger.Prefix("render"):
+        logger.save_video(renders, "render.mp4", fps=10)
+    
 
 
 
